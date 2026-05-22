@@ -1,5 +1,12 @@
 import { execSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { RunState } from "./types.js";
+
+const PROJECT_BRIEF_FILES = ["CLAUDE.md", "AGENTS.md"];
+// Cap total brief bytes injected into a handoff to keep next provider's prompt
+// from ballooning. 16 KB is enough for two reasonable briefs.
+const PROJECT_BRIEF_MAX_BYTES = 16 * 1024;
 
 export interface HandoffInput {
   taskPrompt: string;
@@ -32,6 +39,21 @@ export function buildHandoff(input: HandoffInput): string {
   lines.push("");
   lines.push(input.taskPrompt.trim());
   lines.push("");
+  const briefs = readProjectBriefs(input.cwd);
+  if (briefs.length > 0) {
+    lines.push(`## Project Brief`);
+    lines.push("");
+    for (const b of briefs) {
+      lines.push(`### ${b.name}`);
+      lines.push("");
+      lines.push(b.content.trim());
+      if (b.truncated) {
+        lines.push("");
+        lines.push(`_(truncated to fit handoff budget)_`);
+      }
+      lines.push("");
+    }
+  }
   lines.push(`## Recent Work (git log)`);
   lines.push("");
   lines.push("```");
@@ -57,6 +79,42 @@ export function buildHandoff(input: HandoffInput): string {
   );
   lines.push("");
   return lines.join("\n");
+}
+
+interface ProjectBrief {
+  name: string;
+  content: string;
+  truncated: boolean;
+}
+
+function readProjectBriefs(cwd: string): ProjectBrief[] {
+  const out: ProjectBrief[] = [];
+  const seenNormalized = new Set<string>();
+  let budget = PROJECT_BRIEF_MAX_BYTES;
+  for (const file of PROJECT_BRIEF_FILES) {
+    if (budget <= 0) break;
+    const full = join(cwd, file);
+    try {
+      const st = statSync(full);
+      if (!st.isFile()) continue;
+      let content = readFileSync(full, "utf8");
+      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+      const norm = content.trim();
+      if (norm.length === 0) continue;
+      if (seenNormalized.has(norm)) continue;
+      seenNormalized.add(norm);
+      let truncated = false;
+      if (content.length > budget) {
+        content = content.slice(0, budget);
+        truncated = true;
+      }
+      budget -= content.length;
+      out.push({ name: file, content, truncated });
+    } catch {
+      // missing or unreadable — silently skip
+    }
+  }
+  return out;
 }
 
 function safeGit(args: string[], cwd: string): string {

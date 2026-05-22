@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildHandoff } from "../src/handoff.js";
+
+function withTempDir(setup: (dir: string) => void): string {
+  const dir = mkdtempSync(join(tmpdir(), "swap-handoff-"));
+  setup(dir);
+  return dir;
+}
 
 describe("buildHandoff", () => {
   it("includes provider names, reason, task, and metadata", () => {
@@ -62,5 +71,91 @@ describe("buildHandoff", () => {
       cwd: process.cwd(),
     });
     expect(md).toContain("(none captured)");
+  });
+
+  it("includes CLAUDE.md and AGENTS.md when present in cwd", () => {
+    const dir = withTempDir((d) => {
+      writeFileSync(join(d, "CLAUDE.md"), "# Project brief for Claude\nUse pino logger.\n");
+      writeFileSync(join(d, "AGENTS.md"), "# Project brief for Codex\nUse pino logger.\n");
+    });
+    try {
+      const md = buildHandoff({
+        taskPrompt: "task",
+        fromProvider: "a",
+        toProvider: "b",
+        reason: "x",
+        recentOutputTail: [],
+        cwd: dir,
+      });
+      expect(md).toContain("## Project Brief");
+      expect(md).toContain("### CLAUDE.md");
+      expect(md).toContain("### AGENTS.md");
+      expect(md).toContain("Project brief for Claude");
+      expect(md).toContain("Project brief for Codex");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes identical CLAUDE.md and AGENTS.md", () => {
+    const identical = "# Same brief\nKeep them in sync.\n";
+    const dir = withTempDir((d) => {
+      writeFileSync(join(d, "CLAUDE.md"), identical);
+      writeFileSync(join(d, "AGENTS.md"), identical);
+    });
+    try {
+      const md = buildHandoff({
+        taskPrompt: "task",
+        fromProvider: "a",
+        toProvider: "b",
+        reason: "x",
+        recentOutputTail: [],
+        cwd: dir,
+      });
+      expect(md).toContain("### CLAUDE.md");
+      expect(md).not.toContain("### AGENTS.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the Project Brief section when no briefs exist", () => {
+    const dir = withTempDir(() => {
+      // intentionally empty
+    });
+    try {
+      const md = buildHandoff({
+        taskPrompt: "task",
+        fromProvider: "a",
+        toProvider: "b",
+        reason: "x",
+        recentOutputTail: [],
+        cwd: dir,
+      });
+      expect(md).not.toContain("## Project Brief");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("truncates briefs larger than the handoff budget", () => {
+    const huge = "x".repeat(20 * 1024);
+    const dir = withTempDir((d) => {
+      writeFileSync(join(d, "CLAUDE.md"), huge);
+    });
+    try {
+      const md = buildHandoff({
+        taskPrompt: "task",
+        fromProvider: "a",
+        toProvider: "b",
+        reason: "x",
+        recentOutputTail: [],
+        cwd: dir,
+      });
+      expect(md).toContain("### CLAUDE.md");
+      expect(md).toContain("truncated to fit handoff budget");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
