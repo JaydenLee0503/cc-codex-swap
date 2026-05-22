@@ -17,6 +17,7 @@ export class StateStore {
   readonly dir: string;
   readonly runPath: string;
   readonly handoffPath: string;
+  readonly handoffArchiveDir: string;
   readonly usagePath: string;
   readonly logPath: string;
   readonly pidPath: string;
@@ -25,6 +26,7 @@ export class StateStore {
     this.dir = resolve(cwd, ".swap", "state");
     this.runPath = join(this.dir, "run.json");
     this.handoffPath = join(this.dir, "HANDOFF.md");
+    this.handoffArchiveDir = join(this.dir, "handoffs");
     this.usagePath = join(this.dir, "usage.jsonl");
     this.logPath = join(this.dir, "swap.log");
     this.pidPath = join(this.dir, "swap.pid");
@@ -88,6 +90,18 @@ export class StateStore {
     writeFileSync(this.handoffPath, content, "utf8");
   }
 
+  archiveHandoff(content: string, fromProvider: string, toProvider: string): string {
+    this.ensure();
+    mkdirSync(this.handoffArchiveDir, { recursive: true });
+    // Colon is illegal in Windows filenames; use a filesystem-safe ISO variant.
+    const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+$/, "");
+    const safeFrom = sanitizeSegment(fromProvider);
+    const safeTo = sanitizeSegment(toProvider);
+    const path = join(this.handoffArchiveDir, `${ts}-${safeFrom}-to-${safeTo}.md`);
+    writeFileSync(path, content, "utf8");
+    return path;
+  }
+
   readHandoff(): string | null {
     if (!existsSync(this.handoffPath)) return null;
     return readFileSync(this.handoffPath, "utf8");
@@ -111,4 +125,9 @@ export class StateStore {
       // ignore rotation failures
     }
   }
+}
+
+function sanitizeSegment(s: string): string {
+  const cleaned = s.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40);
+  return cleaned.length > 0 ? cleaned : "unknown";
 }
