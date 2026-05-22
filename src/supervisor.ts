@@ -13,6 +13,10 @@ import type {
 } from "./types.js";
 
 const RECENT_TAIL_LINES = 200;
+// Rolling window used to detect rate-limit phrases that wrap across lines.
+// 3 lines is enough for any realistic word-wrapped error message without
+// inviting false positives from unrelated nearby output.
+const MULTILINE_WINDOW = 3;
 
 export interface SupervisorDeps {
   config: SwapConfig;
@@ -104,7 +108,20 @@ export class Supervisor {
         runState: state,
       });
       this.d.store.writeHandoff(handoff);
-      this.d.logger.info({ from: providerName, to: next, reason }, "handoff written");
+      let archivedPath: string | null = null;
+      try {
+        archivedPath = this.d.store.archiveHandoff(
+          handoff,
+          providerName,
+          next ?? "none",
+        );
+      } catch (err) {
+        this.d.logger.warn({ err: String(err) }, "failed to archive handoff");
+      }
+      this.d.logger.info(
+        { from: providerName, to: next, reason, archivedPath },
+        "handoff written",
+      );
 
       state = {
         ...state,
@@ -205,6 +222,7 @@ export class Supervisor {
   ): Promise<ChildOutcome> {
     return new Promise((resolveOutcome) => {
       const recent: string[] = [];
+      const window: string[] = [];
       let rateLimited = false;
       let reason: string | null = null;
       let charsOut = 0;
@@ -237,16 +255,35 @@ export class Supervisor {
         if (line.length === 0) return;
         recent.push(line);
         if (recent.length > RECENT_TAIL_LINES) recent.shift();
+        window.push(line);
+        if (window.length > MULTILINE_WINDOW) window.shift();
         charsOut += line.length;
-        if (!rateLimited && provider.isRateLimited(line)) {
-          rateLimited = true;
-          reason = `pattern matched on output: "${line.slice(0, 200)}"`;
-          this.d.logger.warn({ provider: provider.name, line: line.slice(0, 200) }, "rate limit detected");
-          try {
-            child.kill();
-          } catch {
-            // ignore
+        if (rateLimited) return;
+
+        let matchedOn: string | null = null;
+        if (provider.isRateLimited(line)) {
+          matchedOn = line;
+        } else if (window.length > 1) {
+          const joined = window.join("\n");
+          if (provider.isRateLimited(joined)) {
+            matchedOn = joined;
           }
+        }
+        if (matchedOn === null) return;
+
+        rateLimited = true;
+        const isMulti = matchedOn.includes("\n");
+        reason = isMulti
+          ? `multi-line pattern matched on output: "${matchedOn.replace(/\n/g, " ⏎ ").slice(0, 200)}"`
+          : `pattern matched on output: "${matchedOn.slice(0, 200)}"`;
+        this.d.logger.warn(
+          { provider: provider.name, line: matchedOn.slice(0, 200), multiline: isMulti },
+          "rate limit detected",
+        );
+        try {
+          child.kill();
+        } catch {
+          // ignore
         }
       };
 

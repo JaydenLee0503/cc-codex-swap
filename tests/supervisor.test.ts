@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
@@ -140,6 +140,64 @@ describe("Supervisor switch cycle", () => {
 
     const runPath = join(tmpDir, ".swap", "state", "run.json");
     expect(existsSync(runPath)).toBe(true);
+
+    // Every swap should leave an archived handoff behind.
+    const archiveDir = join(tmpDir, ".swap", "state", "handoffs");
+    expect(existsSync(archiveDir)).toBe(true);
+    const archived = readdirSync(archiveDir).filter((n) => n.endsWith(".md"));
+    expect(archived.length).toBe(final.switch_count);
+  });
+
+  it("detects rate-limit phrases that wrap across lines", async () => {
+    const store = new StateStore(tmpDir);
+    store.ensure();
+
+    // Pattern only matches when both lines are joined.
+    const wrappedMock = new MockProvider(
+      "claude",
+      {
+        available: true,
+        events: [
+          { delayMs: 5, line: "you have reached your weekly" },
+          { delayMs: 5, line: "limit; try again next Monday" },
+        ],
+      },
+      ["weekly\\s+limit"],
+    );
+
+    const claudeWrapped: Provider = {
+      name: "claude",
+      spawn: (p, o) => wrappedMock.spawn(p, o),
+      isRateLimited: (l) => wrappedMock.isRateLimited(l),
+      isAvailable: async () => wrappedMock.isAvailable(),
+    };
+
+    const codexMock = new MockProvider("codex", {
+      available: true,
+      events: [{ delayMs: 5, line: "codex took over" }],
+    });
+    const codexWrapped: Provider = {
+      name: "codex",
+      spawn: (p, o) => codexMock.spawn(p, o),
+      isRateLimited: (l) => codexMock.isRateLimited(l),
+      isAvailable: async () => codexMock.isAvailable(),
+    };
+
+    const supervisor = new Supervisor({
+      config: baseConfig,
+      providers: new Map<string, Provider>([
+        ["claude", claudeWrapped],
+        ["codex", codexWrapped],
+      ]),
+      store,
+      logger: silentLogger(),
+      cwd: tmpDir,
+      maxSwitches: 2,
+    });
+
+    const final = await supervisor.run({ taskPrompt: "wrap test" });
+    expect(final.switch_count).toBeGreaterThanOrEqual(1);
+    expect(final.last_switch_reason).toMatch(/multi-line/);
   });
 
   it("exits cleanly when stop() is called", async () => {
