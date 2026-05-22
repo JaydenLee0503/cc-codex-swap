@@ -12,6 +12,7 @@
     "start": "node dist/cli.js",
     "test": "vitest run",
     "demo": "node dist/cli.js demo",
+    "handoff:preview": "npm run build && node scripts/handoff-preview.mjs",
     "clean": "rimraf dist"
   },
   "dependencies": {
