@@ -1,7 +1,16 @@
 node_modules/
 dist/
 .swap/state/
+.swap/config.yaml
 *.log
 coverage/
 .DS_Store
-.claude/
+
+# Claude Code: track shared config (settings.json, commands, skills),
+# ignore per-user local overrides.
+.claude/settings.local.json
+.claude/cache/
+.claude/projects/
+
+# Pause skill scratchpad
+RESUME.md
